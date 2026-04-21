@@ -1,0 +1,12 @@
+[
+  {
+    "hwid": "36a194963c3ba3e68f2d647782c1cb6fff533fd370ade1179dc59d1bc74fe9fb",
+    "name": "Customer1",
+    "status": "Pending"
+  },
+  {
+    "hwid": "ABCDEF123456789",
+    "name": "Customer2",
+    "status": "Pending"
+  }
+]
