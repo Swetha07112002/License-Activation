@@ -2,19 +2,35 @@ from flask import Flask, request, jsonify, render_template_string
 import base64
 import random
 import string
+import json
+import os
 
 app = Flask(__name__)
 
-# store active sessions
 db = {}
 
-# generate 12-digit code
+DB_FILE = "hwid_db.json"
+
+
+def load_hwid():
+    if not os.path.exists(DB_FILE):
+        return []
+    with open(DB_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_hwid(data):
+    with open(DB_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+
 def generate_code():
     chars = string.ascii_uppercase
     return "-".join(
         "".join(random.choice(chars) for _ in range(4))
         for _ in range(3)
     )
+
 
 HTML = """
 <!DOCTYPE html>
@@ -28,41 +44,67 @@ HTML = """
 <button type="submit">Generate Code</button>
 </form>
 
+{% if msg %}
+<h3>{{msg}}</h3>
+{% endif %}
+
 {% if code %}
-<h3>Activation Code:</h3>
-<h2 style="color:green;">{{code}}</h2>
+<h2 style="color:green">{{code}}</h2>
 {% endif %}
 
 </body>
 </html>
 """
 
-@app.route("/", methods=["GET","POST"])
+
+@app.route("/", methods=["GET", "POST"])
 def index():
     code = None
+    msg = None
 
     if request.method == "POST":
-        file = request.files["file"]
+        try:
+            file = request.files["file"]
 
-        encoded = file.read().decode().strip()
-        decoded = base64.b64decode(encoded).decode()
+            encoded = file.read().decode().strip()
+            decoded = base64.b64decode(encoded).decode()
 
-        parts = decoded.split("|")
+            # hwid|random|requestid|time
+            parts = decoded.split("|")
 
-        hwid = parts[0]
-        request_id = parts[2]
+            hwid = parts[0]
+            request_id = parts[2]
 
-        code = generate_code()
+            hwids = load_hwid()
 
-        # store session
-        db[code] = {
-            "hwid": hwid,
-            "request_id": request_id
-        }
+            found = None
+            for row in hwids:
+                if row["hwid"] == hwid:
+                    found = row
+                    break
 
-        print("Generated:", code, hwid, request_id)
+            if not found:
+                msg = "HWID Mismatch ❌"
+                return render_template_string(HTML, msg=msg)
 
-    return render_template_string(HTML, code=code)
+            if found["status"] == "Activated":
+                msg = "Already Activated ✅"
+                return render_template_string(HTML, msg=msg)
+
+            code = generate_code()
+
+            db[code] = {
+                "hwid": hwid,
+                "request_id": request_id
+            }
+
+            msg = "Activation Code Generated"
+
+        except:
+            msg = "Invalid license.req"
+
+    return render_template_string(HTML, code=code, msg=msg)
+
 
 @app.route("/verify", methods=["POST"])
 def verify():
@@ -72,20 +114,25 @@ def verify():
     hwid = data.get("hwid")
     request_id = data.get("request_id")
 
-    print("Verify:", code, hwid, request_id)
-
-    # check code
     if code in db:
-        record = db[code]
+        rec = db[code]
 
-        # strict match
-        if record["hwid"] == hwid and record["request_id"] == request_id:
-            del db[code]  # one-time use
+        if rec["hwid"] == hwid and rec["request_id"] == request_id:
+
+            hwids = load_hwid()
+
+            for row in hwids:
+                if row["hwid"] == hwid:
+                    row["status"] = "Activated"
+
+            save_hwid(hwids)
+
+            del db[code]
+
             return jsonify({"valid": True})
 
     return jsonify({"valid": False})
 
-import os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
