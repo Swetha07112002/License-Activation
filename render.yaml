@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: license-server
+    runtime: python
+    buildCommand: ""
+    startCommand: gunicorn license_server:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10
