@@ -7,23 +7,41 @@ import os
 
 app = Flask(__name__)
 
+# one-time active sessions
 db = {}
 
 DB_FILE = "hwid_db.json"
 
 
-def load_hwid():
+# -------------------------------
+# Create json file if not exists
+# -------------------------------
+def ensure_db():
     if not os.path.exists(DB_FILE):
-        return []
+        with open(DB_FILE, "w") as f:
+            json.dump([], f, indent=4)
+
+
+# -------------------------------
+# Load HWID list
+# -------------------------------
+def load_hwid():
+    ensure_db()
     with open(DB_FILE, "r") as f:
         return json.load(f)
 
 
+# -------------------------------
+# Save HWID list
+# -------------------------------
 def save_hwid(data):
     with open(DB_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
 
+# -------------------------------
+# Generate 12-digit code
+# -------------------------------
 def generate_code():
     chars = string.ascii_uppercase
     return "-".join(
@@ -32,6 +50,9 @@ def generate_code():
     )
 
 
+# -------------------------------
+# HTML
+# -------------------------------
 HTML = """
 <!DOCTYPE html>
 <html>
@@ -49,7 +70,7 @@ HTML = """
 {% endif %}
 
 {% if code %}
-<h2 style="color:green">{{code}}</h2>
+<h2 style="color:green;">{{code}}</h2>
 {% endif %}
 
 </body>
@@ -57,43 +78,54 @@ HTML = """
 """
 
 
+# -------------------------------
+# Home
+# -------------------------------
 @app.route("/", methods=["GET", "POST"])
 def index():
     code = None
     msg = None
 
     if request.method == "POST":
+
         try:
             file = request.files["file"]
 
             encoded = file.read().decode().strip()
             decoded = base64.b64decode(encoded).decode()
 
-            # hwid|random|requestid|time
             parts = decoded.split("|")
 
-            hwid = parts[0]
-            request_id = parts[2]
+            hwid = parts[0].strip()
+            request_id = parts[2].strip()
+
+            print("REQ HWID:", repr(hwid))
+            print("REQ ID:", request_id)
 
             hwids = load_hwid()
 
             found = None
-for row in hwids:
-    print("REQ:", repr(hwid))
-    print("DB :", repr(row["hwid"]))
 
-    if row["hwid"].strip().lower() == hwid.strip().lower():
-        found = row
-        break
+            for row in hwids:
+                db_hwid = row["hwid"].strip()
 
-            if not found:
+                print("DB HWID:", repr(db_hwid))
+
+                if db_hwid.lower() == hwid.lower():
+                    found = row
+                    break
+
+            # HWID not found
+            if found is None:
                 msg = "HWID Mismatch ❌"
-                return render_template_string(HTML, msg=msg)
+                return render_template_string(HTML, code=None, msg=msg)
 
+            # Already activated
             if found["status"] == "Activated":
                 msg = "Already Activated ✅"
-                return render_template_string(HTML, msg=msg)
+                return render_template_string(HTML, code=None, msg=msg)
 
+            # Generate activation code
             code = generate_code()
 
             db[code] = {
@@ -101,42 +133,67 @@ for row in hwids:
                 "request_id": request_id
             }
 
-            msg = "Activation Code Generated"
+            # update status
+            found["status"] = "Code Generated"
+            save_hwid(hwids)
 
-        except:
-            msg = "Invalid license.req"
+            print("Generated:", code)
+
+        except Exception as e:
+            print(e)
+            msg = "Invalid license.req ❌"
 
     return render_template_string(HTML, code=code, msg=msg)
 
 
+# -------------------------------
+# Verify code from launcher
+# -------------------------------
 @app.route("/verify", methods=["POST"])
 def verify():
-    data = request.json
 
-    code = data.get("code")
-    hwid = data.get("hwid")
-    request_id = data.get("request_id")
+    try:
+        data = request.json
 
-    if code in db:
-        rec = db[code]
+        code = data.get("code", "").strip()
+        hwid = data.get("hwid", "").strip()
+        request_id = data.get("request_id", "").strip()
 
-        if rec["hwid"] == hwid and rec["request_id"] == request_id:
+        print("VERIFY:", code, hwid, request_id)
 
-            hwids = load_hwid()
+        if code in db:
 
-            for row in hwids:
-                if row["hwid"] == hwid:
-                    row["status"] = "Activated"
+            row = db[code]
 
-            save_hwid(hwids)
+            if (
+                row["hwid"].strip().lower() == hwid.lower()
+                and row["request_id"].strip() == request_id
+            ):
 
-            del db[code]
+                # remove one-time code
+                del db[code]
 
-            return jsonify({"valid": True})
+                # update json status
+                hwids = load_hwid()
 
-    return jsonify({"valid": False})
+                for item in hwids:
+                    if item["hwid"].strip().lower() == hwid.lower():
+                        item["status"] = "Activated"
+
+                save_hwid(hwids)
+
+                return jsonify({"valid": True})
+
+        return jsonify({"valid": False})
+
+    except Exception as e:
+        print(e)
+        return jsonify({"valid": False})
 
 
+# -------------------------------
+# Run
+# -------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
