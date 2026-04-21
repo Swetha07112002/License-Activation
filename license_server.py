@@ -78,10 +78,13 @@ def index():
             hwids = load_hwid()
 
             found = None
-            for row in hwids:
-                if row["hwid"] == hwid:
-                    found = row
-                    break
+for row in hwids:
+    print("REQ:", repr(hwid))
+    print("DB :", repr(row["hwid"]))
+
+    if row["hwid"].strip().lower() == hwid.strip().lower():
+        found = row
+        break
 
             if not found:
                 msg = "HWID Mismatch ❌"
