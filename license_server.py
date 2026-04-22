@@ -1,47 +1,31 @@
 from flask import Flask, request, jsonify, render_template_string
+import mysql.connector
 import base64
+import json
 import random
 import string
-import json
-import os
 
 app = Flask(__name__)
 
-# one-time active sessions
-db = {}
+# =========================
+# 🔥 DB CONFIG (CHANGE HERE ONLY IF NEEDED)
+# =========================
+DB_CONFIG = {
+    "host": "localhost",
+    "user": "root",
+    "password": "Swetha@0711",
+    "database": "licenses_db"
+}
 
-DB_FILE = "hwid_db.json"
+# =========================
+# DB CONNECTION
+# =========================
+def get_db():
+    return mysql.connector.connect(**DB_CONFIG)
 
-
-# -------------------------------
-# Create json file if not exists
-# -------------------------------
-def ensure_db():
-    if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w") as f:
-            json.dump([], f, indent=4)
-
-
-# -------------------------------
-# Load HWID list
-# -------------------------------
-def load_hwid():
-    ensure_db()
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
-
-
-# -------------------------------
-# Save HWID list
-# -------------------------------
-def save_hwid(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=4)
-
-
-# -------------------------------
-# Generate 12-digit code
-# -------------------------------
+# =========================
+# 12-digit CODE GENERATOR
+# =========================
 def generate_code():
     chars = string.ascii_uppercase
     return "-".join(
@@ -49,151 +33,150 @@ def generate_code():
         for _ in range(3)
     )
 
-
-# -------------------------------
-# HTML
-# -------------------------------
+# =========================
+# HOME PAGE (UPLOAD PAGE)
+# =========================
 HTML = """
 <!DOCTYPE html>
 <html>
-<body style="text-align:center;margin-top:50px;font-family:Arial">
+<head>
+<title>License Server</title>
+</head>
+<body style="text-align:center;font-family:Arial;margin-top:50px">
 
 <h2>Upload license.req</h2>
 
 <form method="POST" enctype="multipart/form-data">
-<input type="file" name="file" required><br><br>
-<button type="submit">Generate Code</button>
+<input type="file" name="file" required>
+<br><br>
+<button type="submit">Generate License</button>
 </form>
 
-{% if msg %}
-<h3>{{msg}}</h3>
+{% if code %}
+<h2 style="color:green">Activation Code: {{code}}</h2>
 {% endif %}
 
-{% if code %}
-<h2 style="color:green;">{{code}}</h2>
-{% endif %}
+<br><br>
+<a href="/dashboard">View HWID Dashboard</a>
 
 </body>
 </html>
 """
 
-
-# -------------------------------
-# Home
-# -------------------------------
+# =========================
+# UPLOAD license.req + GENERATE CODE
+# =========================
 @app.route("/", methods=["GET", "POST"])
 def index():
     code = None
-    msg = None
 
     if request.method == "POST":
+        file = request.files["file"]
 
-        try:
-            file = request.files["file"]
+        encoded = file.read().decode().strip()
+        decoded = base64.b64decode(encoded).decode()
 
-            encoded = file.read().decode().strip()
-            decoded = base64.b64decode(encoded).decode()
+        # format: hwid|random|request_id
+        parts = decoded.split("|")
 
-            parts = decoded.split("|")
+        hwid = parts[0]
+        request_id = parts[2]
 
-            hwid = parts[0].strip()
-            request_id = parts[2].strip()
+        code = generate_code()
 
-            print("REQ HWID:", repr(hwid))
-            print("REQ ID:", request_id)
+        conn = get_db()
+        cur = conn.cursor()
 
-            hwids = load_hwid()
+        # store in SQL
+        cur.execute("""
+            INSERT INTO licenses (license_key, hwid, request_id, status)
+            VALUES (%s, %s, %s, %s)
+        """, (code, hwid, request_id, "PENDING"))
 
-            found = None
+        conn.commit()
+        conn.close()
 
-            for row in hwids:
-                db_hwid = row["hwid"].strip()
+        print("Generated:", code, hwid)
 
-                print("DB HWID:", repr(db_hwid))
+    return render_template_string(HTML, code=code)
 
-                if db_hwid.lower() == hwid.lower():
-                    found = row
-                    break
-
-            # HWID not found
-            if found is None:
-                msg = "HWID Mismatch ❌"
-                return render_template_string(HTML, code=None, msg=msg)
-
-            # Already activated
-            if found["status"] == "Activated":
-                msg = "Already Activated ✅"
-                return render_template_string(HTML, code=None, msg=msg)
-
-            # Generate activation code
-            code = generate_code()
-
-            db[code] = {
-                "hwid": hwid,
-                "request_id": request_id
-            }
-
-            # update status
-            found["status"] = "Code Generated"
-            save_hwid(hwids)
-
-            print("Generated:", code)
-
-        except Exception as e:
-            print(e)
-            msg = "Invalid license.req ❌"
-
-    return render_template_string(HTML, code=code, msg=msg)
-
-
-# -------------------------------
-# Verify code from launcher
-# -------------------------------
+# =========================
+# VERIFY API (Launcher calls this)
+# =========================
 @app.route("/verify", methods=["POST"])
 def verify():
+    data = request.json
 
-    try:
-        data = request.json
+    code = data.get("code")
+    hwid = data.get("hwid")
+    request_id = data.get("request_id")
 
-        code = data.get("code", "").strip()
-        hwid = data.get("hwid", "").strip()
-        request_id = data.get("request_id", "").strip()
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
 
-        print("VERIFY:", code, hwid, request_id)
+    cur.execute("SELECT * FROM licenses WHERE license_key=%s", (code,))
+    row = cur.fetchone()
 
-        if code in db:
+    if row:
+        if row["hwid"] == hwid and row["request_id"] == request_id:
 
-            row = db[code]
+            # mark active
+            cur2 = conn.cursor()
+            cur2.execute("""
+                UPDATE licenses 
+                SET status='ACTIVE'
+                WHERE id=%s
+            """, (row["id"],))
 
-            if (
-                row["hwid"].strip().lower() == hwid.lower()
-                and row["request_id"].strip() == request_id
-            ):
+            conn.commit()
+            conn.close()
 
-                # remove one-time code
-                del db[code]
+            return jsonify({"valid": True})
 
-                # update json status
-                hwids = load_hwid()
+    conn.close()
+    return jsonify({"valid": False})
 
-                for item in hwids:
-                    if item["hwid"].strip().lower() == hwid.lower():
-                        item["status"] = "Activated"
+# =========================
+# DASHBOARD (YOUR "SHEET VIEW")
+# =========================
+@app.route("/dashboard")
+def dashboard():
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
 
-                save_hwid(hwids)
+    cur.execute("SELECT * FROM licenses ORDER BY created_at DESC")
+    data = cur.fetchall()
 
-                return jsonify({"valid": True})
+    html = """
+    <h2>License Dashboard</h2>
+    <table border="1" cellpadding="10">
+        <tr>
+            <th>ID</th>
+            <th>License</th>
+            <th>HWID</th>
+            <th>Status</th>
+            <th>Time</th>
+        </tr>
+    """
 
-        return jsonify({"valid": False})
+    for row in data:
+        html += f"""
+        <tr>
+            <td>{row['id']}</td>
+            <td>{row['license_key']}</td>
+            <td>{row['hwid'][:20]}...</td>
+            <td>{row['status']}</td>
+            <td>{row['created_at']}</td>
+        </tr>
+        """
 
-    except Exception as e:
-        print(e)
-        return jsonify({"valid": False})
+    html += "</table>"
 
+    conn.close()
+    return html
 
-# -------------------------------
-# Run
-# -------------------------------
+# =========================
+# RUN SERVER
+# =========================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
