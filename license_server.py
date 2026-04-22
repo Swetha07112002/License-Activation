@@ -1,17 +1,16 @@
 from flask import Flask, request, jsonify, render_template_string
 import mysql.connector
 import base64
-import json
 import random
 import string
 
 app = Flask(__name__)
 
 # =========================
-# 🔥 DB CONFIG (CHANGE HERE ONLY IF NEEDED)
+# DB CONFIG
 # =========================
 DB_CONFIG = {
-    "host": "localhost",
+    "host": "127.0.0.1",
     "user": "root",
     "password": "Swetha@0711",
     "database": "licenses_db"
@@ -21,10 +20,18 @@ DB_CONFIG = {
 # DB CONNECTION
 # =========================
 def get_db():
-    return mysql.connector.connect(**DB_CONFIG)
+    return mysql.connector.connect(
+        host="127.0.0.1",
+        user="root",
+        password="Swetha@0711",
+        database="licenses_db",
+        port=3306,
+        auth_plugin="mysql_native_password",
+        use_pure=True
+    )
 
 # =========================
-# 12-digit CODE GENERATOR
+# CODE GENERATOR
 # =========================
 def generate_code():
     chars = string.ascii_uppercase
@@ -34,152 +41,266 @@ def generate_code():
     )
 
 # =========================
-# HOME PAGE (UPLOAD PAGE)
+# HTML PAGE
 # =========================
 HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>License Server</title>
-</head>
-<body style="text-align:center;font-family:Arial;margin-top:50px">
+<title>License Panel</title>
 
-<h2>Upload license.req</h2>
+<style>
+body{
+    font-family:Arial;
+    background:#f4f6f9;
+    text-align:center;
+    padding:40px;
+}
+
+.box{
+    background:white;
+    padding:30px;
+    border-radius:15px;
+    width:95%;
+    margin:auto;
+    box-shadow:0 0 10px rgba(0,0,0,.1);
+}
+
+input,button{
+    padding:10px;
+    margin:5px;
+}
+
+table{
+    width:100%;
+    border-collapse:collapse;
+    margin-top:20px;
+}
+
+th,td{
+    border:1px solid #ddd;
+    padding:10px;
+    text-align:center;
+    word-break:break-all;
+}
+
+th{
+    background:#0d6efd;
+    color:white;
+}
+
+#hwidlist{
+    display:none;
+}
+
+.codebox{
+    color:green;
+    font-size:28px;
+    font-weight:bold;
+    margin-top:20px;
+}
+
+.msg{
+    font-size:20px;
+    margin-top:15px;
+}
+</style>
+
+<script>
+function showList(){
+    let box = document.getElementById("hwidlist");
+    if(box.style.display === "none"){
+        box.style.display = "block";
+    }else{
+        box.style.display = "none";
+    }
+}
+</script>
+
+</head>
+<body>
+
+<div class="box">
+
+<h1>Upload License File</h1>
 
 <form method="POST" enctype="multipart/form-data">
 <input type="file" name="file" required>
-<br><br>
-<button type="submit">Generate License</button>
+<button type="submit">Generate</button>
 </form>
 
-{% if code %}
-<h2 style="color:green">Activation Code: {{code}}</h2>
+{% if message %}
+<div class="msg">{{message}}</div>
 {% endif %}
 
-<br><br>
-<a href="/dashboard">View HWID Dashboard</a>
+{% if code %}
+<div class="codebox">Activation Code: {{code}}</div>
+{% endif %}
+
+<br>
+<button type="button" onclick="showList()">Show HWID List</button>
+
+<div id="hwidlist">
+
+<h2>Saved HWID List</h2>
+
+<table>
+<tr>
+<th>ID</th>
+<th>HWID</th>
+<th>Status</th>
+<th>Date</th>
+<th>Time</th>
+</tr>
+
+{% for row in rows %}
+<tr>
+<td>{{ row.id }}</td>
+<td>{{ row.hwid }}</td>
+<td>{{ row.status }}</td>
+<td>{{ row.created_at.strftime('%d-%m-%Y') if row.created_at else '' }}</td>
+<td>{{ row.created_at.strftime('%I:%M %p') if row.created_at else '' }}</td>
+</tr>
+{% endfor %}
+
+</table>
+
+</div>
+
+</div>
 
 </body>
 </html>
 """
 
 # =========================
-# UPLOAD license.req + GENERATE CODE
+# HOME PAGE
 # =========================
 @app.route("/", methods=["GET", "POST"])
 def index():
+
     code = None
+    message = None
 
     if request.method == "POST":
-        file = request.files["file"]
+        try:
+            file = request.files.get("file")
 
-        encoded = file.read().decode().strip()
-        decoded = base64.b64decode(encoded).decode()
+            if not file:
+                message = "No file selected ❌"
+            else:
+                raw = file.read()
+                encoded = raw.decode().strip()
+                decoded = base64.b64decode(encoded).decode()
 
-        # format: hwid|random|request_id
-        parts = decoded.split("|")
+                parts = decoded.split("|")
 
-        hwid = parts[0]
-        request_id = parts[2]
+                hwid = parts[0].strip()
+                request_id = parts[2].strip()
 
-        code = generate_code()
+                conn = get_db()
+                cur = conn.cursor(dictionary=True, buffered=True)
 
-        conn = get_db()
-        cur = conn.cursor()
+                # HWID exists ah check pannum
+                cur.execute(
+                    "SELECT * FROM licenses WHERE hwid=%s LIMIT 1",
+                    (hwid,)
+                )
+                allowed = cur.fetchone()
 
-        # store in SQL
-        cur.execute("""
-            INSERT INTO licenses (license_key, hwid, request_id, status)
-            VALUES (%s, %s, %s, %s)
-        """, (code, hwid, request_id, "PENDING"))
+                if allowed:
+                    # Existing pending code irukka?
+                    cur.execute(
+                        "SELECT * FROM licenses WHERE hwid=%s AND status='PENDING' ORDER BY id DESC LIMIT 1",
+                        (hwid,)
+                    )
+                    old = cur.fetchone()
 
-        conn.commit()
-        conn.close()
+                    if old and old.get("license_key"):
+                        code = old["license_key"]
+                        message = "Existing Code Loaded ✅"
+                    else:
+                        code = generate_code()
 
-        print("Generated:", code, hwid)
+                        if old:
+                            # Existing row update pannum
+                            cur.execute("""
+                                UPDATE licenses
+                                SET license_key=%s, request_id=%s, status='PENDING'
+                                WHERE id=%s
+                            """, (code, request_id, old["id"]))
+                        else:
+                            # New row insert pannum
+                            cur.execute("""
+                                INSERT INTO licenses
+                                (license_key, hwid, request_id, status)
+                                VALUES (%s, %s, %s, %s)
+                            """, (code, hwid, request_id, "PENDING"))
 
-    return render_template_string(HTML, code=code)
+                        conn.commit()
+                        message = "New Code Generated ✅"
+                else:
+                    message = "HWID Mismatch ❌"
+
+                conn.close()
+
+        except Exception as e:
+            message = "ERROR: " + str(e)
+
+    conn = get_db()
+    cur = conn.cursor(dictionary=True, buffered=True)
+
+    cur.execute("""
+        SELECT id, hwid, status, created_at
+        FROM licenses
+        ORDER BY id DESC
+    """)
+    rows = cur.fetchall()
+
+    conn.close()
+
+    return render_template_string(
+        HTML,
+        code=code,
+        message=message,
+        rows=rows
+    )
 
 # =========================
-# VERIFY API (Launcher calls this)
+# VERIFY API
 # =========================
 @app.route("/verify", methods=["POST"])
 def verify():
+
     data = request.json
 
-    code = data.get("code")
-    hwid = data.get("hwid")
-    request_id = data.get("request_id")
+    code = data.get("code", "").strip()
+    hwid = data.get("hwid", "").strip()
 
-    try:
-        conn = get_db()
-        cur = conn.cursor(dictionary=True)
+    conn = get_db()
+    cur = conn.cursor(dictionary=True, buffered=True)
 
-    except Exception as e:
-        print("DB ERROR:", e)
-        return jsonify({"error": "DB not connected"}), 500
-
-    cur.execute("SELECT * FROM licenses WHERE license_key=%s", (code,))
+    cur.execute(
+        "SELECT * FROM licenses WHERE license_key=%s",
+        (code,)
+    )
     row = cur.fetchone()
 
     if row:
-        if row["hwid"] == hwid and row["request_id"] == request_id:
-
-            cur2 = conn.cursor()
-            cur2.execute("""
-                UPDATE licenses 
-                SET status='ACTIVE'
-                WHERE id=%s
-            """, (row["id"],))
-
+        if row["hwid"].strip().lower() == hwid.lower():
+            cur.execute(
+                "UPDATE licenses SET status='ACTIVE' WHERE id=%s",
+                (row["id"],)
+            )
             conn.commit()
             conn.close()
-
             return jsonify({"valid": True})
 
     conn.close()
     return jsonify({"valid": False})
-# =========================
-# DASHBOARD (YOUR "SHEET VIEW")
-# =========================
-@app.route("/dashboard")
-def dashboard():
-    conn = get_db()
-    cur = conn.cursor(dictionary=True)
-
-    cur.execute("SELECT * FROM licenses ORDER BY created_at DESC")
-    data = cur.fetchall()
-
-    html = """
-    <h2>License Dashboard</h2>
-    <table border="1" cellpadding="10">
-        <tr>
-            <th>ID</th>
-            <th>License</th>
-            <th>HWID</th>
-            <th>Status</th>
-            <th>Time</th>
-        </tr>
-    """
-
-    for row in data:
-        html += f"""
-        <tr>
-            <td>{row['id']}</td>
-            <td>{row['license_key']}</td>
-            <td>{row['hwid'][:20]}...</td>
-            <td>{row['status']}</td>
-            <td>{row['created_at']}</td>
-        </tr>
-        """
-
-    html += "</table>"
-
-    conn.close()
-    return html
 
 # =========================
-# RUN SERVER
+# RUN
 # =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
