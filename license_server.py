@@ -111,8 +111,13 @@ def verify():
     hwid = data.get("hwid")
     request_id = data.get("request_id")
 
-    conn = get_db()
-    cur = conn.cursor(dictionary=True)
+    try:
+        conn = get_db()
+        cur = conn.cursor(dictionary=True)
+
+    except Exception as e:
+        print("DB ERROR:", e)
+        return jsonify({"error": "DB not connected"}), 500
 
     cur.execute("SELECT * FROM licenses WHERE license_key=%s", (code,))
     row = cur.fetchone()
@@ -120,7 +125,6 @@ def verify():
     if row:
         if row["hwid"] == hwid and row["request_id"] == request_id:
 
-            # mark active
             cur2 = conn.cursor()
             cur2.execute("""
                 UPDATE licenses 
@@ -135,7 +139,6 @@ def verify():
 
     conn.close()
     return jsonify({"valid": False})
-
 # =========================
 # DASHBOARD (YOUR "SHEET VIEW")
 # =========================
