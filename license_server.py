@@ -42,6 +42,8 @@ def init_db():
     cur.close()
     conn.close()
 
+
+init_db()
 # =========================
 # CODE GENERATOR
 # =========================
@@ -372,7 +374,6 @@ def verify():
             conn.commit()
             cur.close()
             conn.close()
-	    init_db()
             return jsonify({"valid": True})
 
     cur.close()
