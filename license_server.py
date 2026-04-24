@@ -1,34 +1,46 @@
 from flask import Flask, request, jsonify, render_template_string
-import mysql.connector
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import base64
 import random
 import string
+import os
 
 app = Flask(__name__)
 
 # =========================
-# DB CONFIG
-# =========================
-DB_CONFIG = {
-    "host": "127.0.0.1",
-    "user": "root",
-    "password": "Swetha@0711",
-    "database": "licenses_db"
-}
-
-# =========================
-# DB CONNECTION
+# DB CONNECTION - POSTGRESQL
 # =========================
 def get_db():
-    return mysql.connector.connect(
-        host="127.0.0.1",
-        user="root",
-        password="Swetha@0711",
-        database="licenses_db",
-        port=3306,
-        auth_plugin="mysql_native_password",
-        use_pure=True
+    return psycopg2.connect(
+        host=os.environ.get("DB_HOST"),
+        database=os.environ.get("DB_NAME"),
+        user=os.environ.get("DB_USER"),
+        password=os.environ.get("DB_PASSWORD"),
+        port=os.environ.get("DB_PORT", "5432")
     )
+
+# =========================
+# AUTO CREATE TABLE
+# =========================
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS licenses (
+        id SERIAL PRIMARY KEY,
+        license_key VARCHAR(50),
+        hwid TEXT,
+        request_id TEXT,
+        status VARCHAR(20),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
 # =========================
 # CODE GENERATOR
@@ -199,9 +211,9 @@ def index():
                 request_id = parts[2].strip()
 
                 conn = get_db()
-                cur = conn.cursor(dictionary=True, buffered=True)
+                cur = conn.cursor(cursor_factory=RealDictCursor)
 
-                # HWID exists ah check pannum
+                # HWID already saved irukka check
                 cur.execute(
                     "SELECT * FROM licenses WHERE hwid=%s LIMIT 1",
                     (hwid,)
@@ -209,9 +221,14 @@ def index():
                 allowed = cur.fetchone()
 
                 if allowed:
-                    # Existing pending code irukka?
+                    # Pending code already irukka check
                     cur.execute(
-                        "SELECT * FROM licenses WHERE hwid=%s AND status='PENDING' ORDER BY id DESC LIMIT 1",
+                        """
+                        SELECT * FROM licenses
+                        WHERE hwid=%s AND status='PENDING'
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
                         (hwid,)
                     )
                     old = cur.fetchone()
@@ -222,41 +239,39 @@ def index():
                     else:
                         code = generate_code()
 
-                        if old:
-                            # Existing row update pannum
-                            cur.execute("""
-                                UPDATE licenses
-                                SET license_key=%s, request_id=%s, status='PENDING'
-                                WHERE id=%s
-                            """, (code, request_id, old["id"]))
-                        else:
-                            # New row insert pannum
-                            cur.execute("""
-                                INSERT INTO licenses
-                                (license_key, hwid, request_id, status)
-                                VALUES (%s, %s, %s, %s)
-                            """, (code, hwid, request_id, "PENDING"))
+                        cur.execute(
+                            """
+                            UPDATE licenses
+                            SET license_key=%s, request_id=%s, status='PENDING'
+                            WHERE id=%s
+                            """,
+                            (code, request_id, allowed["id"])
+                        )
 
                         conn.commit()
                         message = "New Code Generated ✅"
+
                 else:
                     message = "HWID Mismatch ❌"
 
+                cur.close()
                 conn.close()
 
         except Exception as e:
             message = "ERROR: " + str(e)
 
     conn = get_db()
-    cur = conn.cursor(dictionary=True, buffered=True)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
     cur.execute("""
         SELECT id, hwid, status, created_at
         FROM licenses
         ORDER BY id DESC
     """)
+
     rows = cur.fetchall()
 
+    cur.close()
     conn.close()
 
     return render_template_string(
@@ -265,6 +280,65 @@ def index():
         message=message,
         rows=rows
     )
+
+# =========================
+# ADD HWID PAGE
+# =========================
+@app.route("/add-hwid", methods=["GET", "POST"])
+def add_hwid():
+
+    message = None
+
+    if request.method == "POST":
+        hwid = request.form.get("hwid", "").strip()
+
+        if hwid:
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+
+                cur.execute(
+                    """
+                    INSERT INTO licenses (hwid, status)
+                    VALUES (%s, %s)
+                    """,
+                    (hwid, "NOT USED")
+                )
+
+                conn.commit()
+                cur.close()
+                conn.close()
+
+                message = "HWID Added Successfully ✅"
+
+            except Exception as e:
+                message = "ERROR: " + str(e)
+        else:
+            message = "HWID Required ❌"
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <body style="font-family:Arial;text-align:center;margin-top:80px;">
+
+    <h2>Add HWID</h2>
+
+    <form method="POST">
+        <input type="text" name="hwid" placeholder="Enter HWID" required style="padding:10px;width:650px;">
+        <br><br>
+        <button type="submit" style="padding:10px 25px;">Add HWID</button>
+    </form>
+
+    {% if message %}
+    <h3>{{message}}</h3>
+    {% endif %}
+
+    <br>
+    <a href="/">Back to License Page</a>
+
+    </body>
+    </html>
+    """, message=message)
 
 # =========================
 # VERIFY API
@@ -278,29 +352,41 @@ def verify():
     hwid = data.get("hwid", "").strip()
 
     conn = get_db()
-    cur = conn.cursor(dictionary=True, buffered=True)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
     cur.execute(
         "SELECT * FROM licenses WHERE license_key=%s",
         (code,)
     )
+
     row = cur.fetchone()
 
     if row:
         if row["hwid"].strip().lower() == hwid.lower():
+
             cur.execute(
                 "UPDATE licenses SET status='ACTIVE' WHERE id=%s",
                 (row["id"],)
             )
+
             conn.commit()
+            cur.close()
             conn.close()
+
             return jsonify({"valid": True})
 
+    cur.close()
     conn.close()
+
     return jsonify({"valid": False})
 
 # =========================
 # RUN
 # =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    init_db()
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=True
+    )
