@@ -276,30 +276,30 @@ def verify():
     code = data.get("code", "").strip()
     hwid = data.get("hwid", "").strip()
 
+    print("VERIFY CODE:", code)
+    print("VERIFY HWID:", hwid)
+
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     cur.execute("SELECT * FROM licenses WHERE license_key=%s", (code,))
     row = cur.fetchone()
 
+    print("DB ROW:", row)
+
     if row and row["hwid"].strip().lower() == hwid.lower():
         cur.execute(
             "UPDATE licenses SET status='ACTIVE', activated_at=CURRENT_TIMESTAMP WHERE id=%s",
             (row["id"],)
         )
-
         conn.commit()
         cur.close()
         conn.close()
-
         return jsonify({"valid": True})
 
     cur.close()
     conn.close()
-
     return jsonify({"valid": False})
-
-# Render / Gunicorn start ஆகும்போதும் table create ஆகும்
 init_db()
 
 if __name__ == "__main__":
