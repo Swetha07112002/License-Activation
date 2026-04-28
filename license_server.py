@@ -274,7 +274,7 @@ def verify():
     data = request.json
 
     code = data.get("code", "").strip()
-    hwid = data.get("hwid", "").strip()
+    hwid = data.get("hwid", "").strip().lower()
 
     print("VERIFY CODE:", code)
     print("VERIFY HWID:", hwid)
@@ -287,15 +287,23 @@ def verify():
 
     print("DB ROW:", row)
 
-    if row and row["hwid"].strip().lower() == hwid.lower():
-        cur.execute(
-            "UPDATE licenses SET status='ACTIVE', activated_at=CURRENT_TIMESTAMP WHERE id=%s",
-            (row["id"],)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"valid": True})
+    if row:
+        db_hwid = row["hwid"].strip().lower()
+        print("DB HWID:", db_hwid)
+
+        if db_hwid == hwid:
+            print("MATCH SUCCESS")
+
+            cur.execute(
+                "UPDATE licenses SET status='ACTIVE', activated_at=CURRENT_TIMESTAMP WHERE id=%s",
+                (row["id"],)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({"valid": True})
+
+        print("HWID MISMATCH")
 
     cur.close()
     conn.close()
