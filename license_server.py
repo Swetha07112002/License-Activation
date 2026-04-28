@@ -33,10 +33,14 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    ALTER TABLE licenses
+    ADD COLUMN IF NOT EXISTS activated_at TIMESTAMP NULL
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
-
 def generate_code():
     chars = string.ascii_uppercase
     return "-".join(
